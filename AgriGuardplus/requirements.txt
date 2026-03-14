@@ -1,6 +1,7 @@
---index-url https://download.pytorch.org/whl/cpu
-torch
-torchvision
+# Look for AI models here
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# Standard Libraries
 flask
 gunicorn
 ultralytics>=8.3.0
@@ -10,3 +11,7 @@ flask-talisman
 flask-caching
 python-dotenv
 numpy
+
+# AI Libraries (Will be pulled from the extra-index-url above)
+torch
+torchvision
