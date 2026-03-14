@@ -2,38 +2,125 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Live View</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgriGuard+ | Live Surveillance</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .container { text-align: center; margin-top: 50px; }
+        #canvas { width: 90%; max-width: 640px; border: 5px solid #2c3e50; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.2); }
+        .status-box { margin: 20px; padding: 15px; font-size: 1.2rem; font-weight: bold; border-radius: 5px; }
+        .active { background-color: #27ae60; color: white; }
+        .inactive { background-color: #c0392b; color: white; }
+        #detection-result { margin-top: 10px; font-size: 1.1rem; color: #d35400; }
+    </style>
 </head>
 <body>
+    <div class="container">
+        <h1>Live AI Surveillance</h1>
+        
+        <video id="video" autoplay playsinline style="display:none;"></video>
+        
+        <canvas id="canvas" width="640" height="480"></canvas>
 
-    <video autoplay muted loop playsinline class="video-background">
-        <source src="{{ url_for('static', filename='videos/dashboard_video.mp4') }}" type="video/mp4">
-    </video>
-    <div class="video-overlay"></div>
+        <div id="status-indicator" class="status-box inactive">System: Loading...</div>
+        <div id="detection-result">Waiting for detection...</div>
 
-    <nav>
-        <div class="nav-logo">AgriGuard+</div>
-        <ul class="nav-links">
-            <li><a href="{{ url_for('home') }}">Home</a></li>
-            <li><a href="{{ url_for('data') }}">Data</a></li>
-            <li><a href="{{ url_for('live') }}" class="active">Live View</a></li>
-            <li><a href="{{ url_for('index') }}">Logout</a></li>
-        </ul>
-    </nav>
-
-    <div class="page-layout">
-        <aside class="sidebar">
-            <h3>News</h3>
-            <p>Monitoring active...</p>
-        </aside>
-
-        <main class="main-content">
-            <h2>Live Feed</h2>
-            <div class="live-box">
-                <img src="{{ url_for('video_feed') }}" width="100%" alt="Live Camera Feed">
-            </div>
-        </main>
+        <div class="controls">
+            <button onclick="toggleSystem()" id="toggleBtn" class="btn">Start Monitoring</button>
+            <a href="{{ url_for('home') }}" class="btn secondary">Back to Home</a>
+        </div>
     </div>
+
+    <audio id="alert-sound" src="{{ url_for('static', filename='sounds/beast.wav') }}" preload="auto"></audio>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const context = canvas.getContext('2d');
+        const statusBox = document.getElementById('status-indicator');
+        const resultBox = document.getElementById('detection-result');
+        const alertSound = document.getElementById('alert-sound');
+        
+        let isMonitoring = false;
+
+        // 1. Access the Camera (Laptop or Phone)
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "environment" }, // Uses back camera on phones
+                    audio: false 
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                console.error("Camera Access Error:", err);
+                alert("Please allow camera access to use surveillance.");
+            }
+        }
+
+        // 2. Toggle System Status
+        function toggleSystem() {
+            isMonitoring = !isMonitoring;
+            const btn = document.getElementById('toggleBtn');
+            
+            if (isMonitoring) {
+                btn.innerText = "Stop Monitoring";
+                statusBox.innerText = "System: ON (Monitoring)";
+                statusBox.className = "status-box active";
+                // Start sending frames to Render
+                monitoringLoop();
+            } else {
+                btn.innerText = "Start Monitoring";
+                statusBox.innerText = "System: OFF";
+                statusBox.className = "status-box inactive";
+            }
+
+            // Sync with Server Status
+            fetch('/api/status/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: isMonitoring ? 'ON' : 'OFF' })
+            });
+        }
+
+        // 3. The Monitoring Loop
+        async function monitoringLoop() {
+            if (!isMonitoring) return;
+
+            // Draw current video frame to canvas
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Convert canvas to Base64 Image
+            const imageData = canvas.toDataURL('image/jpeg', 0.5); // 0.5 quality saves bandwidth
+
+            try {
+                const response = await fetch('/api/process_frame', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: imageData })
+                });
+
+                const data = await response.json();
+
+                if (data.status === "success") {
+                    if (data.detected.length > 0) {
+                        resultBox.innerText = "🚨 Detected: " + data.detected.join(', ');
+                        if (data.alert) {
+                            alertSound.play(); // Play sound on browser
+                        }
+                    } else {
+                        resultBox.innerText = "Scanning field... (No animals)";
+                    }
+                }
+            } catch (err) {
+                console.error("Processing Error:", err);
+            }
+
+            // Capture next frame in 1 second (saves Render CPU/Memory)
+            setTimeout(monitoringLoop, 1000);
+        }
+
+        // Initialize camera on page load
+        startCamera();
+    </script>
 </body>
 </html>
