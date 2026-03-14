@@ -1,3 +1,6 @@
+--index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
 flask
 gunicorn
 ultralytics>=8.3.0
@@ -6,6 +9,4 @@ mysql-connector-python
 flask-talisman
 flask-caching
 python-dotenv
---index-url https://download.pytorch.org/whl/cpu
-torch
-torchvision
+numpy
