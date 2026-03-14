@@ -1,12 +1,11 @@
 flask
-ultralytics>=8.3.0
-mysql-connector-python
-opencv-python-headless
 gunicorn
-requests
-torch --index-url https://download.pytorch.org/whl/cpu
-torchvision --index-url https://download.pytorch.org/whl/cpu
+ultralytics>=8.3.0
+opencv-python-headless
+mysql-connector-python
+flask-talisman
+flask-caching
 python-dotenv
-numpy
-pillow
-pyyaml
+--index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
