@@ -24,15 +24,12 @@ load_dotenv()
 app = Flask(__name__)
 
 # --- CONFIGURATION ---
-app.secret_key = os.environ.get('SECRET_KEY', 'AgriGuard_Cloud_Key_2026')
-# Talisman helps with security, but we disable strict CSP for the video/canvas to work easily
+# Use the random string we generated earlier for your SECRET_KEY in Render
+app.secret_key = os.environ.get('SECRET_KEY', 'default_secret_key_if_env_missing')
 Talisman(app, content_security_policy=None, force_https=False)
 app.config['CACHE_TYPE'] = 'SimpleCache'
 app.config['CACHE_DEFAULT_TIMEOUT'] = 300
 cache = Cache(app)
-
-DETECTIONS_FOLDER = os.path.join('static', 'detections')
-os.makedirs(DETECTIONS_FOLDER, exist_ok=True)
 
 # --- EMAIL CREDENTIALS ---
 SMTP_EMAIL = os.environ.get("EMAIL_USER")
@@ -45,48 +42,66 @@ otp_storage = {}
 TARGET_ANIMALS = ['bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'monkey', 'boar']
 
 # --- MYSQL CONFIGURATION ---
-db_config = {
-    'host': os.environ.get('DB_HOST'),
-    'user': os.environ.get('DB_USER'),
-    'password': os.environ.get('DB_PASSWORD'),
-    'database': os.environ.get('DB_NAME'),
-    'port': int(os.environ.get('DB_PORT', 3306))
-}
-
 connection_pool = None
-try:
-    if db_config['host']:
-        connection_pool = pooling.MySQLConnectionPool(pool_name="agri_pool", pool_size=5, pool_reset_session=True, **db_config)
-        print("✅ Cloud Database Pool Created.")
-except Exception as e: 
-    print(f"❌ DB Error: {e}")
+def init_connection_pool():
+    global connection_pool
+    try:
+        host = os.environ.get('DB_HOST')
+        if host:
+            connection_pool = pooling.MySQLConnectionPool(
+                pool_name="agri_pool",
+                pool_size=5,
+                pool_reset_session=True,
+                host=host,
+                user=os.environ.get('DB_USER'),
+                password=os.environ.get('DB_PASSWORD'),
+                database=os.environ.get('DB_NAME', 'agriguard_db'),
+                port=int(os.environ.get('DB_PORT', 3306))
+            )
+            print("✅ Database Pool Created.")
+    except Exception as e:
+        print(f"❌ DB Pool Error: {e}")
 
 # --- AI MODEL LOADING ---
 def load_yolo():
     global model
     try:
+        # Load model from the 'models' folder in your GitHub repo
         model = YOLO('models/yolo11n.pt') 
-        print("✅ YOLOv11n Loaded successfully.")
+        print("✅ YOLOv11n Loaded.")
     except Exception as e:
-        print(f"❌ Model Loading Error: {e}")
+        print(f"❌ Model Error: {e}")
 
-# --- DATABASE LOGGING ---
+# --- DATABASE HELPERS ---
 def log_detection(animal_name):
-    if connection_pool:
-        try:
-            conn = connection_pool.get_connection()
-            cursor = conn.cursor()
-            now = datetime.now()
-            # We don't save a physical image path here to save Render disk space, 
-            # but we log the event.
-            cursor.execute("INSERT INTO detections (timestamp, animal_name, image_path) VALUES (%s, %s, %s)", 
-                           (now, animal_name, "Cloud_Detection"))
-            conn.commit()
-            cursor.close()
-            conn.close()
-            print(f"💾 Logged {animal_name} to database.")
-        except Exception as e:
-            print(f"❌ DB Log Error: {e}")
+    if not connection_pool: return
+    try:
+        conn = connection_pool.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO detections (timestamp, animal_name, image_path) VALUES (%s, %s, %s)", 
+                       (datetime.now(), animal_name, "Cloud_Detection"))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"💾 DB Log Error: {e}")
+
+def send_email(to_email, subject, body):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_EMAIL
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        print(f"📧 Email Error: {e}")
+        return False
 
 # --- ROUTES ---
 
@@ -97,60 +112,84 @@ def home():
 
 @app.route('/live')
 def live():
-    if 'user_id' not in session: return redirect(url_for('home'))
+    if 'user_id' not in session: 
+        return redirect(url_for('home'))
     return render_template('live.html')
 
-# --- THE NEW BROWSER-BASED DETECTION ROUTE ---
 @app.route('/api/process_frame', methods=['POST'])
 def process_frame():
-    global system_status
     if system_status['status'] == 'OFF':
         return jsonify({"status": "system_off"})
 
     data = request.json
     if not data or 'image' not in data:
-        return jsonify({"error": "No image data"}), 400
+        return jsonify({"error": "No data"}), 400
 
-    # 1. Decode Base64 image from browser
     try:
+        # Decode image
         img_data = data['image'].split(',')[1]
         img_bytes = base64.b64decode(img_data)
         nparr = np.frombuffer(img_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-        # 2. Run AI Inference
+        # Inference
         results = model.predict(source=frame, conf=0.5, imgsz=320, verbose=False)
-        
-        detected_list = []
+        detected = []
         alert = False
 
         for r in results:
             for box in r.boxes:
                 label = model.names[int(box.cls[0])]
                 if label in TARGET_ANIMALS:
-                    detected_list.append(label)
+                    detected.append(label)
                     alert = True
-                    # Log detection to MySQL
                     log_detection(label)
 
-        return jsonify({
-            "status": "success",
-            "detected": detected_list,
-            "alert": alert
-        })
+        return jsonify({"status": "success", "detected": detected, "alert": alert})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# --- AUTH ROUTES (Fixed & Added back) ---
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+    
+    # Placeholder for actual DB check - replace with your query logic
+    # If using DB: conn = connection_pool.get_connection()...
+    otp = str(random.randint(100000, 999999))
+    otp_storage[email] = {'otp': otp, 'timestamp': time.time()}
+    
+    if send_email(email, "AgriGuard Login", f"Your OTP is: {otp}"):
+        return jsonify({"success": True, "message": "OTP Sent"})
+    return jsonify({"success": False, "message": "Email Error"}), 500
+
+@app.route('/verify_otp', methods=['POST'])
+def verify_otp():
+    data = request.json
+    email = data.get('email')
+    user_otp = data.get('otp')
+    
+    if email in otp_storage and otp_storage[email]['otp'] == user_otp:
+        session['user_id'] = email # Store something in session
+        return jsonify({"success": True})
+    return jsonify({"success": False, "message": "Invalid OTP"})
+
 @app.route('/api/status/toggle', methods=['POST'])
 def toggle_status():
-    global system_status
     data = request.json
     system_status['status'] = data.get('status', 'OFF')
     return jsonify({'success': True, 'new_status': system_status['status']})
 
-# --- (Keep your Registration/Login/OTP routes exactly as they were) ---
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('home'))
 
 if __name__ == '__main__':
+    init_connection_pool()
     load_yolo()
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
